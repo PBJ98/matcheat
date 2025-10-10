@@ -1,0 +1,93 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  gender    String?
+  birthYear Int?
+  profile   Profile?
+  likesFrom Like[]   @relation("likesFrom")
+  likesTo   Like[]   @relation("likesTo")
+  matchesA  Match[]  @relation("matchesA")
+  matchesB  Match[]  @relation("matchesB")
+  createdAt DateTime @default(now())
+  reviews   Review[]
+}
+
+model Profile {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  region      String?
+  mbti        String?
+  bio         String?
+  budgetMin   Int?
+  budgetMax   Int?
+  foodTags    String[]
+  timeWindows String[]
+  user        User     @relation(fields: [userId], references: [id])
+}
+
+model Restaurant {
+  id         String     @id @default(cuid())
+  name       String
+  addr       String
+  category   String
+  priceLevel Int
+  lat        Float?
+  lng        Float?
+  datePlans  DatePlan[]
+}
+
+model Like {
+  id         String   @id @default(cuid())
+  fromUserId String
+  toUserId   String
+  createdAt  DateTime @default(now())
+  fromUser   User     @relation("likesFrom", fields: [fromUserId], references: [id])
+  toUser     User     @relation("likesTo", fields: [toUserId], references: [id])
+
+  @@unique([fromUserId, toUserId])
+}
+
+model Match {
+  id        String     @id @default(cuid())
+  userAId   String
+  userBId   String
+  status    String     @default("active")
+  createdAt DateTime   @default(now())
+  userA     User       @relation("matchesA", fields: [userAId], references: [id])
+  userB     User       @relation("matchesB", fields: [userBId], references: [id])
+  datePlans DatePlan[]
+  reviews   Review[]
+
+  @@unique([userAId, userBId])
+}
+
+model DatePlan {
+  id           String     @id @default(cuid())
+  matchId      String
+  restaurantId String
+  datetime     DateTime
+  status       String     @default("proposed")
+  match        Match      @relation(fields: [matchId], references: [id])
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id])
+}
+
+model Review {
+  id       String  @id @default(cuid())
+  matchId  String
+  authorId String
+  rating   Int
+  comment  String?
+  isRude   Boolean @default(false)
+  match    Match   @relation(fields: [matchId], references: [id])
+  author   User    @relation(fields: [authorId], references: [id])
+}
