@@ -1,4 +1,9 @@
 "use client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0; // ✅ 숫자 그대로!
+export const fetchCache = "force-no-store";
+
+
 import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { addDoc, collection, doc, setDoc, Timestamp } from "firebase/firestore";

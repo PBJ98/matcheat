@@ -370,14 +370,13 @@ function PostCard({
               return (
                 <button
                   key={m}
-                  onClick={() =>
-                    onChange(
-                      "preferredMbti",
-                      active
-                        ? editData.preferredMbti!.filter((x) => x !== m)
-                        : [...(editData.preferredMbti || []), m]
-                    )
-                  }
+                 onClick={() => {
+                        const updatedMbti = active
+                      ? (editData.preferredMbti ?? []).filter((x: string) => x !== m)
+                      : [...(editData.preferredMbti ?? []), m];
+                    onChange("preferredMbti", updatedMbti);
+                  }}
+
                   style={{
                     ...chipStyle,
                     backgroundColor: active ? PRIMARY : "white",

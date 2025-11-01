@@ -99,7 +99,7 @@ export default function ChatRoom() {
     const unsubscribe = onSnapshot(q, { includeMetadataChanges: true }, (snapshot) => {
       const msgs: ChatMessage[] = snapshot.docs.map((doc) => {
         const data = doc.data() as ChatMessage;
-        return { id: doc.id, ...data };
+        return {...data, id: doc.id };
       });
       setMessages(msgs);
 

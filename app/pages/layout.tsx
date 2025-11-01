@@ -4,10 +4,9 @@ import LogoutButton from "../components/logoutBotton";
 
 type AppLayoutProps = {
   children: ReactNode;
-  isFormValid?: boolean; // ✅ 유효성 여부 prop 추가
-};
+   };
 
-export default function AppLayout({ children, isFormValid = false }: AppLayoutProps) {
+export default function AppLayout({ children = false }: AppLayoutProps) {
   return (
     <div style={{ paddingBottom: "100px", backgroundColor: "#f0f8ff", minHeight: "100vh" }}>
       {/* 상단 헤더 */}
@@ -18,7 +17,7 @@ export default function AppLayout({ children, isFormValid = false }: AppLayoutPr
           left: 0,
           right: 0,
           height: "80px",
-          backgroundColor: isFormValid ? "#ff7f50" : "rgba(255,127,80,0.5)", // ✅ 변경된 부분
+        
           boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
           borderBottomLeftRadius: "20px",
           borderBottomRightRadius: "20px",
