@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { db } from "../../firebase"; // Firestore 연결
+import { db } from "../../../firebase"; // Firestore 연결
 import { collection, query, where, getDocs } from "firebase/firestore";
 
 export default function FindIdPage() {
