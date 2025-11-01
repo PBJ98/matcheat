@@ -19,18 +19,27 @@ export default function LogoutButton() {
         position: "absolute",
         top: "10px",
         right: "10px",
-        backgroundColor: "#ff4d4d",
+        backgroundColor: "#ff7f50", // 🍊 메인 코랄
         color: "white",
         border: "none",
-        borderRadius: "5px",
-        padding: "0.25rem 0.5rem",
+        borderRadius: "8px",
+        padding: "0.4rem 0.8rem",
         cursor: "pointer",
-        fontSize: "0.8rem",
+        fontSize: "0.9rem",
+        fontWeight: 700,
+        boxShadow: "0 4px 10px rgba(255,127,80,0.4)",
+        transition: "all 0.25s ease",
+      }}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.backgroundColor = "#ff9f1c"; // hover 색상
+        e.currentTarget.style.boxShadow = "0 6px 15px rgba(255,159,28,0.45)";
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.backgroundColor = "#ff7f50";
+        e.currentTarget.style.boxShadow = "0 4px 10px rgba(255,127,80,0.4)";
       }}
     >
       로그아웃
     </button>
   );
 }
-
-

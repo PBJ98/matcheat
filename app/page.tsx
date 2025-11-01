@@ -1,90 +1,155 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 export default function LandingPage() {
   const router = useRouter();
-  const [hovered, setHovered] = useState(null);
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [animate, setAnimate] = useState(false);
+
+  useEffect(() => {
+    setTimeout(() => setAnimate(true), 200); // 등장 애니메이션
+  }, []);
 
   return (
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      alignItems: "center",
-      justifyContent: "center",
-      height: "100vh",
-      background: "linear-gradient(135deg, #003366, #0066cc)",
-      color: "white",
-      textAlign: "center",
-      padding: "0 20px",
-      fontFamily: "'Arial', sans-serif"
-    }}>
-      {/* 제목 */}
-      <h1 style={{
-        fontSize: "4rem",
-        marginBottom: "1rem",
-        fontWeight: "800",
-        textShadow: "2px 2px 6px rgba(0,0,0,0.5)"
-      }}>밥친구</h1>
+    <div
+      style={{
+        width: "100%",
+        height: "100vh",
+        position: "relative",
+        backgroundImage:
+          "url('https://images.unsplash.com/photo-1600891964599-f61ba0e24092?auto=format&fit=crop&w=720&q=80')",
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        fontFamily: "'Noto Sans KR', sans-serif",
+        display: "flex",
+        flexDirection: "column",
+        justifyContent: "flex-end",
+        alignItems: "center",
+        paddingBottom: "80px", // 모바일 하단 여백
+      }}
+    >
+      {/* 블러 + 그라데이션 오버레이 */}
+      <div
+        style={{
+          position: "absolute",
+          width: "100%",
+          height: "100%",
+          backdropFilter: "blur(3px)",
+          background: "linear-gradient(to top, rgba(0,0,0,0.5), rgba(0,0,0,0.1))",
+          top: 0,
+          left: 0,
+          pointerEvents: "none", // ✅ 클릭 방해 제거
+        }}
+      ></div>
 
-      {/* 설명 */}
-      <p style={{
-        fontSize: "1.3rem",
-        marginBottom: "2.5rem",
-        maxWidth: "500px",
-        textShadow: "1px 1px 3px rgba(0,0,0,0.4)"
-      }}>
-        이제 혼밥은 그만! 밥친구와 함께 맛있는 식사를 즐기고, 새로운 친구도 만나보세요!
-      </p>
+      {/* 타이틀 & 설명 */}
+      <div
+        style={{
+          position: "absolute",
+          top: "20%",
+          width: "100%",
+          textAlign: "center",
+          color: "white",
+          padding: "0 20px",
+          transform: animate ? "translateY(0)" : "translateY(40px)",
+          opacity: animate ? 1 : 0,
+          transition: "all 0.8s ease-out",
+        }}
+      >
+        <h1
+          style={{
+            fontSize: "3.8rem",
+            fontWeight: "900",
+            textShadow: "0 0 15px rgba(0,0,0,0.6)",
+            marginBottom: "1rem",
+          }}
+        >
+          밥친구
+        </h1>
+        <p
+          style={{
+            fontSize: "1.3rem",
+            lineHeight: "1.6",
+            textShadow: "0 0 10px rgba(0,0,0,0.5)",
+          }}
+        >
+          혼밥은 이제 그만! 🍚<br />
+          오늘, 밥친구와 함께 맛있는 식사를 즐겨보세요
+        </p>
+      </div>
 
       {/* 버튼 그룹 */}
-      <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
-        {/* 로그인 버튼 */}
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "15px",
+          width: "80%",
+          zIndex: 1, // 오버레이보다 위로
+        }}
+      >
         <button
-          onClick={() => router.push("/sign/signin")}                                    //로그인버튼 연결페이지 주소/sign/signin
+          onClick={() => router.push("/sign/signin")}
           onMouseEnter={() => setHovered("login")}
           onMouseLeave={() => setHovered(null)}
           style={{
-            padding: "0.9rem 2.5rem",
-            fontSize: "1rem",
-            backgroundColor: hovered === "login" ? "#e6e6e6" : "white",
-            color: "#003366",
+            width: "100%",
+            padding: "1rem",
+            fontSize: "1.2rem",
+            fontWeight: "700",
+            color: "#fff",
+            backgroundColor: hovered === "login" ? "#ff9f1c" : "#ff7f50",
             border: "none",
-            borderRadius: "8px",
+            borderRadius: "50px",
+            boxShadow:
+              hovered === "login"
+                ? "0 6px 15px rgba(255,159,28,0.5)"
+                : "0 4px 10px rgba(255,127,80,0.4)",
             cursor: "pointer",
-            fontWeight: "bold",
-            boxShadow: "0 4px 6px rgba(0,0,0,0.3)",
-            transition: "all 0.2s"
+            transition: "all 0.25s",
           }}
         >
           로그인
         </button>
-
-        {/* 회원가입 버튼 */}
         <button
-          onClick={() => router.push("/onboarding")}
+          onClick={() => router.push("/sign/signup")}
           onMouseEnter={() => setHovered("signup")}
           onMouseLeave={() => setHovered(null)}
           style={{
-            padding: "0.9rem 2.5rem",
-            fontSize: "1rem",
-            backgroundColor: hovered === "signup" ? "white" : "transparent",
-            color: hovered === "signup" ? "#003366" : "white",
-            border: "2px solid white",
-            borderRadius: "8px",
+            width: "100%",
+            padding: "1rem",
+            fontSize: "1.2rem",
+            fontWeight: "700",
+            color: hovered === "signup" ? "#fff" : "#ff7f50",
+            backgroundColor:
+              hovered === "signup" ? "#ff9f1c" : "rgba(255,255,255,0.2)",
+            border: "2px solid #ff7f50",
+            borderRadius: "50px",
+            boxShadow:
+              hovered === "signup"
+                ? "0 6px 15px rgba(255,159,28,0.5)"
+                : "0 4px 10px rgba(255,127,80,0.4)",
             cursor: "pointer",
-            fontWeight: "bold",
-            boxShadow: hovered === "signup" ? "0 4px 6px rgba(0,0,0,0.3)" : "none",
-            transition: "all 0.2s"
+            transition: "all 0.25s",
           }}
         >
           회원가입
         </button>
       </div>
 
-      {/* 하단 아이콘 (선택) */}
-      <div style={{ marginTop: "3rem", opacity: 0.5, fontSize: "2rem" }}>
-        🍽️🥢🍜
+      {/* 하단 장식 */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: "20px",
+          textAlign: "center",
+          fontSize: "2rem",
+          opacity: 0.8,
+          color: "white",
+        }}
+      >
+        🍚🥢🍲
       </div>
     </div>
   );

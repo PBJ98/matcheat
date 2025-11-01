@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    
+    "paths": { "@/*": ["./*"]},
     "target": "ES2022",
     "lib": [
       "dom",
@@ -17,8 +19,6 @@
     "isolatedModules": true,
     "jsx": "preserve",
     "incremental": true,
-    "baseUrl": ".",
-    "paths": { "@/*": ["./*"]},
     "plugins": [
       {
         "name": "next"

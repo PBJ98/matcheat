@@ -1,111 +1,154 @@
-/*"use client";
-import Link from "next/link";
-import { usePathname } from "next/navigation";
-
-export default function BottomNav() {
-  const pathname = usePathname();
-
-  const menus = [
-    { name: "지도", path: "/map" },
-    { name: "요청란", path: "/requests" },
-    { name: "홈", path: "/matches" },
-    { name: "채팅", path: "/chat" },
-    { name: "마이페이지", path: "/mypage" },
-  ];
-
-  return (
-    <nav
-      style={{
-        position: "fixed",
-        bottom: 0,
-        left: 0,
-        right: 0,
-        height: "60px",
-        display: "flex",
-        justifyContent: "space-around",
-        alignItems: "center",
-        backgroundColor: "#003366", // 진한 파랑
-        color: "white",
-        boxShadow: "0 -2px 5px rgba(0,0,0,0.1)",
-      }}
-    >
-      {menus.map((menu) => (
-        <Link
-          key={menu.path}
-          href={menu.path}
-          style={{
-            flex: 1,
-            textAlign: "center",
-            color: pathname === menu.path ? "#FFD700" : "white", // 현재 선택 메뉴 강조
-            textDecoration: "none",
-            fontWeight: pathname === menu.path ? "bold" : "normal",
-          }}
-        >
-          {menu.name}
-        </Link>
-      ))}
-    </nav>
-  );
-}
-*/
-
 "use client";
+
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { FaMapMarkedAlt, FaClipboardList, FaHome, FaComments, FaUser } from "react-icons/fa";
+import { auth, db } from "@/firebase";
+import { collection, onSnapshot, query, where } from "firebase/firestore";
+
+type MenuItem = {
+  name: string;
+  path: string;
+  icon: JSX.Element;
+  badge?: number;
+};
+
+const COLOR_PRIMARY = "#ff7f50";       // 메인
+const COLOR_PRIMARY_HOVER = "#ff9f1c"; // hover
+const COLOR_TEXT = "#8E735B";          // 브라운 텍스트
 
 export default function BottomNav() {
   const pathname = usePathname();
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [unreadTotal, setUnreadTotal] = useState(0);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
 
-  const menus = [
+  // 로그인 감시
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged((u) => setCurrentUserId(u?.uid ?? null));
+    return () => unsub();
+  }, []);
+
+  // 채팅 미읽음 합계
+  useEffect(() => {
+    if (!currentUserId) { setUnreadTotal(0); return; }
+    const qRooms = query(collection(db, "chatRooms"), where("participants", "array-contains", currentUserId));
+    const unsub = onSnapshot(qRooms, (snap) => {
+      let total = 0;
+      snap.forEach((d) => {
+        const data = d.data() as any;
+        const v = Number(data?.unreadCount?.[currentUserId] ?? 0);
+        total += Number.isFinite(v) && v > 0 ? v : 0;
+      });
+      setUnreadTotal(total);
+    });
+    return () => unsub();
+  }, [currentUserId]);
+
+  // 받은 요청 대기건
+  useEffect(() => {
+    if (!currentUserId) { setPendingCount(0); return; }
+    const qReq = query(
+      collection(db, "requests"),
+      where("toUserId", "==", currentUserId),
+      where("status", "==", "pending"),
+    );
+    const unsub = onSnapshot(qReq, (snap) => setPendingCount(snap.size));
+    return () => unsub();
+  }, [currentUserId]);
+
+  const menus: MenuItem[] = [
     { name: "지도", path: "/pages/map", icon: <FaMapMarkedAlt /> },
-    { name: "요청란", path: "/pages/requests", icon: <FaClipboardList /> },
+    { name: "요청", path: "/pages/requests", icon: <FaClipboardList />, badge: pendingCount },
     { name: "홈", path: "/pages/matches", icon: <FaHome /> },
-    { name: "채팅", path: "/pages/chat", icon: <FaComments /> },
-    { name: "마이페이지", path: "/pages/mypage", icon: <FaUser /> },
+    { name: "채팅", path: "/pages/chatlist", icon: <FaComments />, badge: unreadTotal },
+    { name: "마이", path: "/pages/mypage", icon: <FaUser /> },
   ];
 
   return (
     <nav
+      aria-label="하단 내비게이션"
       style={{
         position: "fixed",
-        bottom: 10, // 화면 끝에서 살짝 띄우기
-        left: 10,
-        right: 10,
-        height: "70px",
-        display: "flex",
-        justifyContent: "space-around",
-        alignItems: "center",
-        backgroundColor: "#ffffff",
-        borderRadius: "20px",
-        boxShadow: "0 4px 15px rgba(0,0,0,0.2)",
-        padding: "0 10px",
+        left: 12,
+        right: 12,
+        bottom: "max(12px, env(safe-area-inset-bottom))",
         zIndex: 100,
+        height: 70,
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: 8,
+        borderRadius: 999,
+        background: "rgba(255,255,255,0.7)",       // 글래스 느낌
+        backdropFilter: "blur(10px)",
+        WebkitBackdropFilter: "blur(10px)",
+        boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
+        border: "1px solid rgba(234,223,218,0.9)",
       }}
     >
-      {menus.map((menu) => {
-        const isActive = pathname === menu.path;
+      {menus.map((m) => {
+        const active = pathname?.startsWith(m.path) ?? false;
+        const hovered = hoverKey === m.path;
+        const bg = active
+          ? (hovered ? COLOR_PRIMARY_HOVER : COLOR_PRIMARY)
+          : (hovered ? "rgba(255,127,80,0.12)" : "transparent");
+        const color = active ? "#fff" : COLOR_TEXT;
+
         return (
           <Link
-            key={menu.path}
-            href={menu.path}
+            key={m.path}
+            href={m.path}
+            aria-current={active ? "page" : undefined}
+            onMouseEnter={() => setHoverKey(m.path)}
+            onMouseLeave={() => setHoverKey((prev) => (prev === m.path ? null : prev))}
             style={{
               flex: 1,
-              textAlign: "center",
-              color: isActive ? "#4da6ff" : "#888888",
+              height: 54,
               textDecoration: "none",
               display: "flex",
-              flexDirection: "column",
               alignItems: "center",
               justifyContent: "center",
-              fontWeight: isActive ? "bold" : "500",
-              transition: "all 0.2s",
+              position: "relative",
+              borderRadius: 999,
+              fontWeight: 700,
+              background: bg,
+              color,
+              transform: hovered ? "translateY(-1px)" : "translateY(0)",
+              transition: "transform .15s ease, background .2s ease, color .2s ease",
             }}
           >
-            <div style={{ fontSize: "1.5rem", marginBottom: "2px" }}>
-              {menu.icon}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 22, lineHeight: 0 }}>{m.icon}</span>
+              <span style={{ fontSize: 13 }}>{m.name}</span>
             </div>
-            <span style={{ fontSize: "0.85rem" }}>{menu.name}</span>
+
+            {(m.badge ?? 0) > 0 && (
+              <span
+                aria-label={`${m.name} 알림 ${m.badge}개`}
+                style={{
+                  position: "absolute",
+                  top: -2,
+                  right: 6,
+                  minWidth: 20,
+                  height: 20,
+                  padding: "0 6px",
+                  borderRadius: 999,
+                  background: active ? "#fff" : "#ff3b30",
+                  color: active ? COLOR_PRIMARY : "#fff",
+                  fontSize: 11,
+                  fontWeight: 800,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+                }}
+              >
+                {m.badge}
+              </span>
+            )}
           </Link>
         );
       })}

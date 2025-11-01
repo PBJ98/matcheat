@@ -1,36 +1,35 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { listenReviews, addReviewDoc, ReviewDoc } from "@/lib/reviewRepo";
+import { useRouter } from "next/navigation";
+import { collection, getDocs, doc, getDoc } from "firebase/firestore";
+import { db } from "../../../firebase";
 
-// ===== 타입 =====
 type PlaceItem = {
   id: string;
   place_name: string;
   road_address_name?: string;
   address_name?: string;
   phone?: string;
-  place_url?: string; // (인앱 고정으로 사용하지 않음)
-  x: string; // lon
-  y: string; // lat
+  place_url?: string;
+  x: string;
+  y: string;
   category_name?: string;
+};
+
+type RecruitPost = {
+  id: string;
+  title?: string;
+  restaurant?: string;
+  authorId?: string;
+  authorName?: string;
+  lat?: number;
+  lng?: number;
+  place?: { lat?: number; lng?: number };
 };
 
 type Category = "all" | "korean" | "chinese" | "western" | "japanese" | "cafe";
 
-// ===== 유틸: 하버사인 =====
-function haversine(lat1: number, lon1: number, lat2: number, lon2: number) {
-  const R = 6371;
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
-// Geolocation Promise 래퍼
 function getPosition(opts: PositionOptions): Promise<GeolocationPosition> {
   return new Promise((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(resolve, reject, opts);
@@ -38,218 +37,244 @@ function getPosition(opts: PositionOptions): Promise<GeolocationPosition> {
 }
 
 export default function MapPage() {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
-
-  // 마커/오버레이
   const markersRef = useRef<any[]>([]);
+  const recruitMarkersRef = useRef<any[]>([]);
   const infoRef = useRef<any | null>(null);
   const myMarkerRef = useRef<any | null>(null);
   const myCircleRef = useRef<any | null>(null);
 
-  // 인앱 길찾기 오버레이
-  const routeLineRef = useRef<any | null>(null);
-  const routeLabelRef = useRef<any | null>(null);
-
-  // 상태
   const [q, setQ] = useState("");
   const [radius, setRadius] = useState(2000);
   const [activeCat, setActiveCat] = useState<Category>("all");
   const [results, setResults] = useState<PlaceItem[]>([]);
-  const [selected, setSelected] = useState<PlaceItem | null>(null);
-  const [reviews, setReviews] = useState<ReviewDoc[]>([]);
-  const [travelMode, setTravelMode] = useState<"walk" | "bike" | "car">("walk");
-  const [myLocationActive, setMyLocationActive] = useState(false); // 📍 토글
-  const prevResultsRef = useRef<PlaceItem[] | null>(null); // 길찾기 모드 복구용
+  const [recruitVisible, setRecruitVisible] = useState(false);
 
-  const [log, setLog] = useState<string[]>([]);
-  const push = (m: string) => setLog((p) => [...p, m]);
-
-  // 환경변수
   const KAKAO_APPKEY = process.env.NEXT_PUBLIC_KAKAO_JS_KEY;
-  if (!KAKAO_APPKEY) console.error("KAKAO JS KEY 누락: .env.local에 NEXT_PUBLIC_KAKAO_JS_KEY 설정 필요");
+  if (!KAKAO_APPKEY) console.error("KAKAO JS KEY 누락");
 
-  // 지도 초기화
+  const loadRecruitPosts = async () => {
+    try {
+      const kakao = (window as any).kakao;
+      const snapshot = await getDocs(collection(db, "posts"));
+      const posts: RecruitPost[] = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...(d.data() as Omit<RecruitPost, "id">),
+      }));
+
+      recruitMarkersRef.current.forEach((m) => m.setMap(null));
+      recruitMarkersRef.current = [];
+
+      for (const post of posts) {
+        const lat = post.lat ?? post.place?.lat;
+        const lng = post.lng ?? post.place?.lng;
+        if (!lat || !lng) continue;
+
+        if (!post.authorName && post.authorId) {
+          try {
+            const userRef = doc(db, "users", post.authorId);
+            const userDoc = await getDoc(userRef);
+            if (userDoc.exists()) {
+              const userData = userDoc.data() as { name?: string };
+              post.authorName = userData.name || "익명";
+            }
+          } catch (err) {
+            console.warn("작성자 불러오기 실패:", err);
+          }
+        }
+
+        const marker = new kakao.maps.Marker({
+          position: new kakao.maps.LatLng(lat, lng),
+          map: mapRef.current,
+          title: post.title,
+          image: new kakao.maps.MarkerImage(
+            "https://cdn-icons-png.flaticon.com/512/3177/3177361.png",
+            new kakao.maps.Size(30, 30)
+          ),
+        });
+        recruitMarkersRef.current.push(marker);
+
+        const infoHtml = `
+          <div style="padding:10px;min-width:260px;max-width:300px;box-sizing:border-box;">
+            <strong style="display:block;margin-bottom:4px;">${post.title || "제목 없음"}</strong>
+            🍽 ${post.restaurant || "미정"}<br/>
+            👤 ${post.authorName || "작성자 미상"}<br/>
+            <button id="post-${post.id}"
+              style="margin-top:8px;padding:6px 10px;background:#2563eb;color:white;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">
+              모집글 보러가기
+            </button>
+          </div>
+        `;
+        const infoWindow = new kakao.maps.InfoWindow({
+          content: infoHtml,
+          zIndex: 5,
+          removable: false,
+          disableAutoPan: false,
+          pixelOffset: new kakao.maps.Point(0, -20),
+        });
+
+        kakao.maps.event.addListener(marker, "click", () => {
+          if (infoRef.current && infoRef.current.marker === marker) {
+            infoRef.current.close();
+            infoRef.current = null;
+            return;
+          }
+
+          if (infoRef.current) infoRef.current.close();
+
+          infoWindow.open(mapRef.current, marker);
+          infoRef.current = infoWindow;
+          infoRef.current.marker = marker;
+
+          setTimeout(() => {
+            const btn = document.getElementById(`post-${post.id}`);
+            if (btn) btn.onclick = () => router.push(`/pages/matches/${post.id}`);
+          }, 100);
+        });
+      }
+    } catch (err) {
+      console.error("❌ Firestore 로드 실패:", err);
+    }
+  };
+
+  const toggleRecruitPosts = async () => {
+    if (recruitVisible) {
+      recruitMarkersRef.current.forEach((m) => m.setMap(null));
+      recruitMarkersRef.current = [];
+      setRecruitVisible(false);
+    } else {
+      await loadRecruitPosts();
+      setRecruitVisible(true);
+    }
+  };
+
   const init = () => {
-    const w = window as any;
-    const kakao = w.kakao;
-    if (!kakao?.maps) { push("kakao.maps 없음"); return; }
-    if (!containerRef.current) { push("container 없음"); return; }
+    const kakao = (window as any).kakao;
+    if (!kakao?.maps || !containerRef.current) return;
 
-    const el = containerRef.current;
-    if (!el.style.height) el.style.height = "600px"; // 안정화
-
-    const map = new kakao.maps.Map(el, {
-      center: new kakao.maps.LatLng(37.5665, 126.9780),
+    const map = new kakao.maps.Map(containerRef.current, {
+      center: new kakao.maps.LatLng(37.5665, 126.978),
       level: 5,
     });
     mapRef.current = map;
-    push("지도 생성 완료 ✅");
     setTimeout(() => mapRef.current?.relayout(), 0);
   };
 
-  // SDK 로드
   useEffect(() => {
     const w = window as any;
-    if (w.kakao?.maps) {
-      push("SDK 이미 존재 → init");
+    if (w.kakao?.maps && w.kakao.maps.services) {
       w.kakao.maps.load(init);
       return;
     }
+
     const src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${KAKAO_APPKEY}&autoload=false&libraries=services`;
-    push(`SDK 로드 시도: ${src}`);
-    const s = document.createElement("script");
-    s.src = src; s.async = true;
-    s.onload = () => { push("SDK 로드 완료"); (window as any).kakao.maps.load(init); };
-    s.onerror = (e) => { push("SDK 로드 실패 ❌"); console.error("SDK load error", e, src); };
-    document.head.appendChild(s);
-    return () => { s.remove(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!document.querySelector(`script[src*="dapi.kakao.com"]`)) {
+      const s = document.createElement("script");
+      s.src = src;
+      s.async = true;
+      s.onload = () => (window as any).kakao.maps.load(init);
+      document.head.appendChild(s);
+    }
   }, [KAKAO_APPKEY]);
 
-  // ===== 공통 유틸 =====
-  const clearMarkers = () => { markersRef.current.forEach(m => m.setMap(null)); markersRef.current = []; };
-  const closeInfo = () => { if (infoRef.current) { infoRef.current.close(); infoRef.current = null; } };
-  const fitBoundsBy = (positions: any[]) => {
-    const kakao = (window as any).kakao;
-    const bounds = new kakao.maps.LatLngBounds();
-    positions.forEach((p) => bounds.extend(p));
-    if (!bounds.isEmpty()) mapRef.current.setBounds(bounds);
-  };
-
-  // 📍 내 위치 (정확도 반영 + 재시도 + 짧은 watch)
-  const goMyLocation = async (): Promise<boolean> => {
-    if (!mapRef.current) return false;
-    const isSecure =
-      typeof window !== "undefined" &&
-      (location.protocol === "https:" || location.hostname === "localhost");
-    if (!isSecure) { alert("내 위치는 HTTPS에서만 정확합니다. (개발은 localhost OK)"); return false; }
-    if (!("geolocation" in navigator)) { alert("이 브라우저는 위치 서비스를 지원하지 않습니다."); return false; }
-
-    try {
-      let pos: GeolocationPosition | null = null;
-      try {
-        pos = await getPosition({ enableHighAccuracy: true, timeout: 6000, maximumAge: 0 });
-      } catch {
-        pos = await getPosition({ enableHighAccuracy: false, timeout: 8000, maximumAge: 0 });
-      }
-      const { latitude, longitude, accuracy } = pos.coords;
-      const kakao = (window as any).kakao;
-      const center = new kakao.maps.LatLng(latitude, longitude);
-
-      mapRef.current.setCenter(center);
-      mapRef.current.setLevel(4);
-      setTimeout(() => mapRef.current?.relayout(), 0);
-
-      if (myMarkerRef.current) myMarkerRef.current.setMap(null);
-      if (myCircleRef.current) myCircleRef.current.setMap(null);
-
-      myMarkerRef.current = new kakao.maps.Marker({ position: center, map: mapRef.current, title: "내 위치" });
-
-      const acc = Math.max(30, Math.min(accuracy || 200, 1500));
-      myCircleRef.current = new kakao.maps.Circle({
-        center, radius: acc, strokeWeight: 2, strokeColor: "#1e90ff", strokeOpacity: 0.85,
-        fillColor: "#1e90ff", fillOpacity: 0.12,
-      });
-      myCircleRef.current.setMap(mapRef.current);
-
-      // 짧은 watch로 보정(최대 10초)
-      let watchId: number | null = null;
-      const stopWatch = () => { if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; } };
-      const start = Date.now();
-      watchId = navigator.geolocation.watchPosition(
-        (p) => {
-          const a = p.coords.accuracy ?? 9999;
-          const lat = p.coords.latitude;
-          const lng = p.coords.longitude;
-          const ll = new kakao.maps.LatLng(lat, lng);
-          myMarkerRef.current?.setPosition(ll);
-          myCircleRef.current?.setPosition(ll);
-          myCircleRef.current?.setRadius(Math.max(20, Math.min(a, 1000)));
-          if (a <= 100 || Date.now() - start > 10000) stopWatch();
-        },
-        () => stopWatch(),
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
-      setTimeout(stopWatch, 11000);
-
-      return true;
-    } catch (err) {
-      console.error("goMyLocation error", err);
-      alert("위치 정보를 가져오지 못했습니다. 브라우저 권한/네트워크/GPS 상태를 확인해 주세요.");
-      return false;
-    }
-  };
-
-  // 📍 내 위치 토글 (성공 시에만 ON)
-  const toggleMyLocation = async () => {
-    if (myLocationActive) {
-      if (myMarkerRef.current) myMarkerRef.current.setMap(null);
-      if (myCircleRef.current) myCircleRef.current.setMap(null);
-      myMarkerRef.current = null; myCircleRef.current = null;
-      setMyLocationActive(false);
-    } else {
-      const ok = await goMyLocation();
-      setMyLocationActive(!!ok);
-    }
-  };
-
-  // 🔎 검색
-  const runSearch = ({ keyword, categoryCode }: { keyword?: string; categoryCode?: string }) => {
+  // 🔹 수정: center 매개변수 추가
+  const runSearch = ({
+    keyword,
+    categoryCode,
+    center,
+  }: {
+    keyword?: string;
+    categoryCode?: string;
+    center?: any;
+  }) => {
     if (!mapRef.current) return;
     const kakao = (window as any).kakao;
+    if (!kakao?.maps?.services) {
+      setTimeout(() => runSearch({ keyword, categoryCode, center }), 500);
+      return;
+    }
+
     const ps = new kakao.maps.services.Places();
+    const opts: any = {
+      location: center || (myMarkerRef.current ? myMarkerRef.current.getPosition() : mapRef.current.getCenter()),
+      radius,
+    };
 
-    const opts: any = {};
-    if (myMarkerRef.current) { opts.location = myMarkerRef.current.getPosition(); opts.radius = radius; }
-    else { opts.bounds = mapRef.current.getBounds(); }
-
-    const cb = (data: any[], status: string) => {
-      if (status !== kakao.maps.services.Status.OK) {
-        clearMarkers(); closeInfo(); setResults([]); setSelected(null); return;
-      }
-
-      let filtered = data;
-      if (activeCat === "korean")   filtered = data.filter(d => (d.category_name || "").includes("한식"));
-      if (activeCat === "chinese")  filtered = data.filter(d => (d.category_name || "").includes("중식"));
-      if (activeCat === "western")  filtered = data.filter(d => (d.category_name || "").includes("양식"));
-      if (activeCat === "japanese") filtered = data.filter(d => (d.category_name || "").includes("일식"));
-
-      clearMarkers(); closeInfo(); setSelected(null);
+    const showPlaces = (data: any[]) => {
+      markersRef.current.forEach((m) => m.setMap(null));
+      markersRef.current = [];
       const positions: any[] = [];
-      filtered.forEach((place) => {
+
+      data.forEach((place) => {
         const pos = new kakao.maps.LatLng(Number(place.y), Number(place.x));
-        positions.push(pos);
         const marker = new kakao.maps.Marker({ position: pos, map: mapRef.current });
         markersRef.current.push(marker);
+        positions.push(pos);
 
-        // 🔒 외부 링크 제거: 인앱 안내만
         const addr = place.road_address_name || place.address_name || "";
-        const content = `
-          <div style="padding:8px;min-width:210px;">
-            <strong>${place.place_name}</strong><br/>
-            <span style="color:#666;">${addr}</span><br/>
-            ${place.phone ? `<span style="color:#888;">${place.phone}</span><br/>` : ""}
-            <div style="margin-top:6px;font-size:12px;color:#555;">
-              ⓘ 상세/길찾기는 <b>오른쪽 패널</b>에서 진행하세요.
-            </div>
+        const infoHtml = `
+          <div style="padding:10px;min-width:260px;max-width:300px;box-sizing:border-box;">
+            <strong style="display:block;margin-bottom:4px;">${place.place_name}</strong>
+            <span style="color:#555;display:block;word-break:keep-all;">${addr}</span><br/>
+            <button id="write-${place.id}"
+              style="margin-top:8px;padding:6px 10px;background:#ef4444;color:white;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;">
+              🍴 이 장소로 모집글 작성
+            </button>
           </div>
         `;
-        const info = new kakao.maps.InfoWindow({ content });
+        const info = new kakao.maps.InfoWindow({
+          content: infoHtml,
+          zIndex: 5,
+          removable: false,
+          disableAutoPan: false,
+          pixelOffset: new kakao.maps.Point(0, -20),
+        });
 
         kakao.maps.event.addListener(marker, "click", () => {
-          closeInfo(); info.open(mapRef.current, marker); infoRef.current = info;
-          setSelected({
-            id: place.id, place_name: place.place_name,
-            address_name: place.address_name, road_address_name: place.road_address_name,
-            phone: place.phone, place_url: place.place_url,
-            x: place.x, y: place.y, category_name: place.category_name,
-          });
+          if (infoRef.current && infoRef.current.marker === marker) {
+            infoRef.current.close();
+            infoRef.current = null;
+            return;
+          }
+
+          if (infoRef.current) infoRef.current.close();
+          info.open(mapRef.current, marker);
+          infoRef.current = info;
+          infoRef.current.marker = marker;
+
+          setTimeout(() => {
+            const btn = document.getElementById(`write-${place.id}`);
+            if (btn) {
+              btn.onclick = () => {
+                const url = `/pages/matches/uplist?source=map&placeId=${encodeURIComponent(
+                  place.id
+                )}&placeName=${encodeURIComponent(place.place_name)}&lat=${encodeURIComponent(
+                  place.y
+                )}&lng=${encodeURIComponent(place.x)}&category=${encodeURIComponent(activeCat)}`;
+                router.push(url);
+              };
+            }
+          }, 100);
         });
       });
 
-      if (positions.length) fitBoundsBy(positions);
-      setResults(filtered as PlaceItem[]);
+      if (positions.length) {
+        const bounds = new kakao.maps.LatLngBounds();
+        positions.forEach((p) => bounds.extend(p));
+        mapRef.current.setBounds(bounds);
+      }
+
+      setResults(data as PlaceItem[]);
+    };
+
+    const cb = (data: any[], status: string) => {
+      if (status === kakao.maps.services.Status.OK) {
+        showPlaces(data);
+      } else {
+        console.warn("검색 실패 또는 결과 없음");
+      }
     };
 
     if (categoryCode) ps.categorySearch(categoryCode, cb, opts);
@@ -258,362 +283,163 @@ export default function MapPage() {
 
   const handleCategory = (cat: Category) => {
     setActiveCat(cat);
-    if (cat === "cafe")      return runSearch({ categoryCode: "CE7" });
-    if (cat === "korean")    return runSearch({ keyword: "한식" });
-    if (cat === "chinese")   return runSearch({ keyword: "중식" });
-    if (cat === "western")   return runSearch({ keyword: "양식" });
-    if (cat === "japanese")  return runSearch({ keyword: "일식" });
+    if (cat === "cafe") return runSearch({ categoryCode: "CE7" });
+    if (cat === "korean") return runSearch({ keyword: "한식" });
+    if (cat === "chinese") return runSearch({ keyword: "중식" });
+    if (cat === "western") return runSearch({ keyword: "양식" });
+    if (cat === "japanese") return runSearch({ keyword: "일식" });
     return runSearch({ keyword: q || "맛집" });
   };
 
-  useEffect(() => { if (myCircleRef.current) myCircleRef.current.setRadius(radius); }, [radius]);
-  useEffect(() => {
-    const t = setTimeout(() => handleCategory("all"), 400);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const searchMyLocation = async () => {
+    try {
+      const pos = await getPosition({ enableHighAccuracy: true });
+      const lat = pos.coords.latitude;
+      const lng = pos.coords.longitude;
+      const kakao = (window as any).kakao;
 
-  // ===== 인앱 길찾기 =====
-  const clearRoute = () => {
-    if (routeLineRef.current) routeLineRef.current.setMap(null);
-    if (routeLabelRef.current) routeLabelRef.current.setMap(null);
-    routeLineRef.current = null; routeLabelRef.current = null;
+      if (myMarkerRef.current) myMarkerRef.current.setMap(null);
+      if (myCircleRef.current) myCircleRef.current.setMap(null);
 
-    // 목록/마커 복구
-    if (prevResultsRef.current) {
-      prevResultsRef.current = null;
-      handleCategory(activeCat);
+      const marker = new kakao.maps.Marker({
+        map: mapRef.current,
+        position: new kakao.maps.LatLng(lat, lng),
+        title: "내 위치",
+      });
+      myMarkerRef.current = marker;
+
+      const circle = new kakao.maps.Circle({
+        map: mapRef.current,
+        center: marker.getPosition(),
+        radius,
+        strokeWeight: 2,
+        strokeColor: "#FF7F50",
+        strokeOpacity: 0.5,
+        strokeStyle: "dashed",
+        fillColor: "#FF7F50",
+        fillOpacity: 0.1,
+      });
+      myCircleRef.current = circle;
+
+      mapRef.current.setCenter(marker.getPosition());
+      runSearch({ keyword: q || "맛집", center: marker.getPosition() });
+    } catch (err) {
+      console.error("내 위치 검색 실패:", err);
+      alert("내 위치를 가져올 수 없습니다.");
     }
   };
 
-  const drawSimpleRoute = (toLat: number, toLng: number, place?: PlaceItem) => {
-    const kakao = (window as any).kakao;
-    if (!mapRef.current || !myMarkerRef.current) {
-      alert("먼저 📍내 위치를 설정하세요."); return;
-    }
-    clearRoute();
-
-    // 현재 목록/마커 숨기고 선택 가게만 남기기
-    if (!prevResultsRef.current) prevResultsRef.current = results.slice();
-    clearMarkers();
-    if (place) {
-      const pos = new kakao.maps.LatLng(Number(place.y), Number(place.x));
-      const marker = new kakao.maps.Marker({ position: pos, map: mapRef.current });
-      markersRef.current.push(marker);
-      setResults([place]);
-      setSelected(place);
-    }
-
-    const from = myMarkerRef.current.getPosition();
-    const to = new kakao.maps.LatLng(toLat, toLng);
-
-    routeLineRef.current = new kakao.maps.Polyline({
-      path: [from, to],
-      strokeWeight: 4, strokeColor: "#1e90ff", strokeOpacity: 0.85, strokeStyle: "solid",
-    });
-    routeLineRef.current.setMap(mapRef.current);
-
-    const distKm = haversine(from.getLat(), from.getLng(), toLat, toLng);
-    const distM = Math.round(distKm * 1000);
-    const speedMpm =
-      travelMode === "walk" ? 70 : travelMode === "bike" ? 250 : 667;
-    const minutes = Math.max(1, Math.round(distM / speedMpm));
-
-    const mid = new kakao.maps.LatLng((from.getLat()+toLat)/2, (from.getLng()+toLng)/2);
-    routeLabelRef.current = new kakao.maps.CustomOverlay({
-      position: mid, yAnchor: 1.2,
-      content: `
-        <div style="background:#fff;border:1px solid #ddd;border-radius:8px;padding:6px 10px;font-size:12px;">
-          거리: ${distM.toLocaleString()}m · ${travelMode === "car" ? "차" : travelMode === "bike" ? "자전거" : "도보"} 약 ${minutes}분
-        </div>
-      `,
-    });
-    routeLabelRef.current.setMap(mapRef.current);
-
-    const bounds = new kakao.maps.LatLngBounds(); bounds.extend(from); bounds.extend(to);
-    mapRef.current.setBounds(bounds);
+  const goRecruitFromSelected = (p?: PlaceItem) => {
+    const target = p ?? results[0];
+    if (!target) return;
+    const url = `/pages/matches/uplist?source=map&placeId=${encodeURIComponent(
+      target.id
+    )}&placeName=${encodeURIComponent(target.place_name)}&lat=${encodeURIComponent(
+      target.y
+    )}&lng=${encodeURIComponent(target.x)}&category=${encodeURIComponent(activeCat)}`;
+    router.push(url);
   };
 
-  // ===== 선택 장소 리뷰 구독 =====
-  useEffect(() => {
-    if (!selected?.id) { setReviews([]); return; }
-    const unsub = listenReviews(selected.id, setReviews);
-    return () => unsub && unsub();
-  }, [selected?.id]);
-
-  // ===== 렌더 =====
   return (
     <div className="p-4 space-y-3">
       <h1 className="text-xl font-bold">카카오 지도</h1>
 
-      {/* 컨트롤 바 */}
+      {/* 🔎 검색바 */}
       <div className="flex flex-wrap items-center gap-2">
-        {/* 검색 */}
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && handleCategory("all")}
           placeholder="검색어 (예: 파스타, 카페, 삼겹살)"
-          className="px-4 py-2.5 border rounded-lg w-64 text-sm tracking-wide
-                     focus:outline-none focus:ring-2 focus:ring-rose-300"
+          className="px-4 py-2.5 border rounded-lg w-64 text-sm tracking-wide focus:outline-none focus:ring-2 focus:ring-rose-300"
         />
-        <button onClick={() => handleCategory("all")} className="px-4 py-2.5 border rounded-lg text-sm hover:bg-gray-50">
+        <button
+          onClick={() => handleCategory("all")}
+          className="px-4 py-2.5 border rounded-lg text-sm hover:bg-gray-50"
+        >
           🔎 검색
         </button>
 
-        {/* 📍 내 위치 토글 (빨간색 표시) */}
+        {/* 내 위치 기준 검색 버튼 */}
         <button
-          onClick={toggleMyLocation}
-          className={`px-4 py-2.5 border rounded-lg text-sm ${
-            myLocationActive ? "bg-red-500 text-white" : "hover:bg-gray-50"
+          onClick={searchMyLocation}
+          className="px-4 py-2.5 border rounded-lg text-sm hover:bg-gray-50"
+        >
+          📍 내 위치 기준 검색
+        </button>
+
+        <button
+          onClick={toggleRecruitPosts}
+          className={`px-4 py-2.5 border rounded-lg text-sm transition-colors ${
+            recruitVisible
+              ? "bg-blue-600 text-white hover:bg-blue-700"
+              : "bg-white text-blue-600 hover:bg-blue-100"
           }`}
         >
-          📍 내 위치
+          📢 모집글 {recruitVisible ? "끄기" : "보기"}
         </button>
+      </div>
 
-        <label className="ml-2 text-sm text-gray-600">반경</label>
-        <select
-          value={radius}
-          onChange={(e) => setRadius(Number(e.target.value))}
-          className="px-2 py-2 border rounded"
-        >
-          <option value={1000}>1km</option>
-          <option value={2000}>2km</option>
-          <option value={3000}>3km</option>
-          <option value={5000}>5km</option>
-        </select>
-
-        {/* 카테고리 칩 */}
-        <div className="-mx-4 md:mx-0 mt-2 w-full">
-          <div className="px-4 pb-1 flex gap-2 overflow-x-auto no-scrollbar md:overflow-visible md:flex-wrap">
-            {[
-              { key: "korean",   label: "🍚 한식" },
-              { key: "chinese",  label: "🥡 중식" },
-              { key: "western",  label: "🍝 양식" },
-              { key: "japanese", label: "🍣 일식" },
-              { key: "cafe",     label: "☕ 카페" },
-            ].map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => handleCategory(tab.key as any)}
-                className={`shrink-0 px-4 py-2 rounded-full text-sm tracking-wide transition
-                  ${activeCat === (tab.key as any)
-                    ? "bg-white shadow text-gray-900"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* 앱 내 길찾기 모드 */}
-        <div className="ml-auto flex items-center gap-2 text-sm">
-          <span className="text-gray-600">이동수단</span>
-          <select
-            value={travelMode}
-            onChange={(e) => setTravelMode(e.target.value as any)}
-            className="px-2 py-2 border rounded"
+      {/* 🍱 카테고리 버튼 바 */}
+      <div className="flex flex-wrap gap-2 mt-2">
+        {[{ key: "all", label: "전체" },
+          { key: "korean", label: "한식" },
+          { key: "chinese", label: "중식" },
+          { key: "western", label: "양식" },
+          { key: "japanese", label: "일식" },
+          { key: "cafe", label: "카페" }].map((cat) => (
+          <button
+            key={cat.key}
+            onClick={() => handleCategory(cat.key as Category)}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${
+              activeCat === cat.key ? "bg-rose-500 text-white" : "hover:bg-gray-100"
+            }`}
           >
-            <option value="walk">도보</option>
-            <option value="bike">자전거</option>
-            <option value="car">차</option>
-          </select>
-          <button onClick={clearRoute} className="px-3 py-2 border rounded">경로 지우기</button>
-        </div>
+            {cat.label}
+          </button>
+        ))}
       </div>
 
-      {/* 레이아웃: 지도 + 우측 패널 */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_360px] gap-4">
-        {/* 지도 */}
-        <div
-          ref={containerRef}
-          style={{ height: 600 }}
-          className="w-full rounded-xl border md:h-[600px]"
-        />
+      {/* 🗺 지도 */}
+      <div ref={containerRef} style={{ height: 600 }} className="w-full rounded-xl border" />
 
-        {/* 우측 패널: 결과/상세/리뷰 */}
-        <div className="max-h-[600px] overflow-auto rounded-xl border p-2 space-y-3">
-          <div className="text-sm font-semibold">
-            {activeCat === "korean" && "🍚 한식"}
-            {activeCat === "chinese" && "🥡 중식"}
-            {activeCat === "western" && "🍝 양식"}
-            {activeCat === "japanese" && "🍣 일식"}
-            {activeCat === "cafe" && "☕ 카페"}
-            {activeCat === "all" && "🔎 전체 검색"}
-            {` 결과 (${results.length}건)`}
-          </div>
-
-          {/* 결과 목록 */}
-          <div className="divide-y">
-            {results.map((p) => {
-              const kakao = (window as any).kakao;
-              return (
-                <div key={p.id} className="py-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <button
-                      className="text-left"
-                      onClick={() => {
-                        const pos = new kakao.maps.LatLng(Number(p.y), Number(p.x));
-                        mapRef.current.setCenter(pos);
-                        mapRef.current.setLevel(4);
-                        const marker = markersRef.current.find((m) => {
-                          const mp = m.getPosition();
-                          return mp.getLat() === pos.getLat() && mp.getLng() === pos.getLng();
-                        });
-
-                        // 🔒 외부 링크 제거: 인앱 안내만
-                        if (marker) {
-                          const addr = p.road_address_name || p.address_name || "";
-                          const content = `
-                            <div style="padding:8px;min-width:210px;">
-                              <strong>${p.place_name}</strong><br/>
-                              <span style="color:#666;">${addr}</span><br/>
-                              ${p.phone ? `<span style="color:#888;">${p.phone}</span><br/>` : ""}
-                              <div style="margin-top:6px;font-size:12px;color:#555;">
-                                ⓘ <b>오른쪽 패널</b>에서 인앱 길찾기를 사용할 수 있어요.
-                              </div>
-                            </div>
-                          `;
-                          const info = new kakao.maps.InfoWindow({ content });
-                          closeInfo(); info.open(mapRef.current, marker); infoRef.current = info;
-                        }
-                        setSelected(p);
-                      }}
-                    >
-                      <div className="font-medium">{p.place_name}</div>
-                      <div className="text-xs text-gray-600">
-                        {(p.road_address_name || p.address_name || "").slice(0, 60)}
-                      </div>
-                      {p.phone && <div className="text-xs text-gray-500">{p.phone}</div>}
-                    </button>
-
-                    {/* 인앱 길찾기 → 선택 가게만 남김 */}
-                    <button
-                      className="px-2 py-1 border rounded text-xs"
-                      onClick={() => drawSimpleRoute(Number(p.y), Number(p.x), p)}
-                    >
-                      앱 내 길찾기
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {results.length === 0 && (
-              <div className="text-sm text-gray-500 py-4">결과가 없습니다.</div>
-            )}
-          </div>
-
-          {/* 선택된 가게 상세 + 리뷰 */}
-          {selected && (
-            <PlaceDetail
-              place={selected}
-              reviews={reviews}
-              onPanTo={() => {
-                const kakao = (window as any).kakao;
-                const pos = new kakao.maps.LatLng(Number(selected.y), Number(selected.x));
-                mapRef.current.panTo(pos);
-              }}
-              onRoute={() => drawSimpleRoute(Number(selected.y), Number(selected.x), selected)}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* 디버그 로그 (원하면 주석 해제) */}
-      {/* <pre className="text-xs text-gray-500 whitespace-pre-wrap">{log.join("\n")}</pre> */}
-    </div>
-  );
-}
-
-// ===== 상세 + 리뷰 컴포넌트 =====
-function PlaceDetail({
-  place, reviews, onPanTo, onRoute,
-}: {
-  place: PlaceItem;
-  reviews: ReviewDoc[];
-  onPanTo: () => void;
-  onRoute: () => void;
-}) {
-  const [author, setAuthor] = useState("");
-  const [text, setText] = useState("");
-  const [rating, setRating] = useState<number | "">("");
-
-  return (
-    <div className="mt-2 p-3 border rounded space-y-2">
-      <div className="font-semibold">{place.place_name}</div>
-      <div className="text-xs text-gray-600">
-        {(place.road_address_name || place.address_name || "").slice(0, 100)}
-      </div>
-      {place.phone && <div className="text-xs text-gray-500">{place.phone}</div>}
-      <div className="flex gap-2">
-        <button className="px-2 py-1 border rounded text-xs" onClick={onPanTo}>
-          지도이동
-        </button>
-        <button className="px-2 py-1 border rounded text-xs" onClick={onRoute}>
-          앱 내 길찾기
-        </button>
-      </div>
-
-      {/* 리뷰 목록 */}
-      <div className="mt-2">
-        <div className="text-sm font-medium">리뷰</div>
-        {reviews.length === 0 && <div className="text-xs text-gray-500">아직 리뷰가 없습니다.</div>}
-        <div className="space-y-2">
-          {reviews.map((r) => (
-            <div key={r.id} className="text-xs border rounded p-2">
-              <div className="flex items-center justify-between">
-                <span className="font-medium">{r.author || "익명"}</span>
-                {r.rating ? <span>{"★".repeat(r.rating)}</span> : null}
-              </div>
-              <div className="mt-1 whitespace-pre-wrap">{r.text}</div>
-            </div>
-          ))}
+      {/* 📋 검색 결과 목록 */}
+      <div className="max-h-[400px] overflow-auto mt-4 border p-3 rounded-lg bg-white shadow-sm">
+        <div className="text-sm font-semibold mb-3 text-gray-700">
+          🔍 검색 결과 ({results.length}건)
         </div>
 
-        {/* 리뷰 작성 */}
-        <form
-          className="mt-2 space-y-2"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (!text.trim()) return;
-            await addReviewDoc({
-              placeId: place.id,
-              author: (author || "익명").slice(0, 30),
-              text: text.trim().slice(0, 1000),
-              rating: typeof rating === "number" ? rating : undefined,
-            });
-            setText("");
-          }}
-        >
-          <div className="flex gap-2">
-            <input
-              value={author}
-              onChange={(e) => setAuthor(e.target.value)}
-              placeholder="작성자 (선택)"
-              className="px-2 py-1 border rounded text-xs"
-            />
-            <select
-              value={rating}
-              onChange={(e) => setRating(e.target.value ? Number(e.target.value) : "")}
-              className="px-2 py-1 border rounded text-xs"
+        {results.length === 0 ? (
+          <p className="text-sm text-gray-500">검색 결과가 없습니다.</p>
+        ) : (
+          results.map((p) => (
+            <div
+              key={p.id}
+              className="flex justify-between items-center p-3 mb-3 border border-gray-200 rounded-xl hover:shadow-md hover:bg-gray-50 transition-all"
             >
-              <option value="">평점(선택)</option>
-              <option value="1">★☆☆☆☆</option>
-              <option value="2">★★☆☆☆</option>
-              <option value="3">★★★☆☆</option>
-              <option value="4">★★★★☆</option>
-              <option value="5">★★★★★</option>
-            </select>
-          </div>
-          <textarea
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="리뷰를 입력하세요"
-            className="w-full h-20 px-2 py-1 border rounded text-xs"
-          />
-          <button className="px-3 py-1 border rounded text-xs">리뷰 등록</button>
-        </form>
+              <div className="flex flex-col w-[80%] pr-4">
+                <div className="flex items-center gap-1 text-[15px] font-semibold text-gray-800">
+                  <span>🍽</span>
+                  <span className="truncate">{p.place_name}</span>
+                </div>
+
+                <div className="flex items-center gap-1 text-xs text-gray-600 mt-1 leading-snug">
+                  <span>📍</span>
+                  <span className="truncate">
+                    {p.road_address_name || p.address_name || "주소 정보 없음"}
+                  </span>
+                </div>
+              </div>
+
+              <button
+                className="ml-auto px-4 py-2 bg-rose-500 text-white text-xs rounded-lg hover:bg-rose-600 transition-all shadow-sm whitespace-nowrap"
+                onClick={() => goRecruitFromSelected(p)}
+              >
+                🍴 모집하기
+              </button>
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

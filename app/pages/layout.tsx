@@ -1,15 +1,15 @@
 import { ReactNode } from "react";
 import BottomNav from "../components/bottomNav";
-import LogoutButton from "../components/logoutBotton"; // 경로 확인
+import LogoutButton from "../components/logoutBotton";
 
 type AppLayoutProps = {
   children: ReactNode;
+  isFormValid?: boolean; // ✅ 유효성 여부 prop 추가
 };
 
-export default function AppLayout({ children }: AppLayoutProps) {
+export default function AppLayout({ children, isFormValid = false }: AppLayoutProps) {
   return (
     <div style={{ paddingBottom: "100px", backgroundColor: "#f0f8ff", minHeight: "100vh" }}>
-      
       {/* 상단 헤더 */}
       <header
         style={{
@@ -18,7 +18,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           left: 0,
           right: 0,
           height: "80px",
-          background: "linear-gradient(90deg, #4da6ff, #80c1ff)",
+          backgroundColor: isFormValid ? "#ff7f50" : "rgba(255,127,80,0.5)", // ✅ 변경된 부분
           boxShadow: "0 4px 10px rgba(0,0,0,0.1)",
           borderBottomLeftRadius: "20px",
           borderBottomRightRadius: "20px",
@@ -36,7 +36,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
           <p style={{ fontSize: "0.8rem", marginTop: "2px", fontWeight: "500" }}>
             오늘 같이 밥 먹을 친구를 찾아보세요!
           </p>
-          <LogoutButton /> {/* 상단 오른쪽 로그아웃 버튼 */}
+          <LogoutButton />
         </div>
       </header>
 

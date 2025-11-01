@@ -1,8 +1,17 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { collection, getDocs, deleteDoc, doc } from "firebase/firestore";
-import { db, auth } from "../../../firebase"; // 경로 확인
+import {
+  collection,
+  doc,
+  deleteDoc,
+  onSnapshot,
+  orderBy,
+  query,
+  updateDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { db, auth } from "../../../firebase";
 
 export default function MatchesPage() {
   type Post = {
@@ -10,43 +19,99 @@ export default function MatchesPage() {
     category: string;
     title: string;
     content: string;
-    authorId: string;    // ← 여기 추가
-    authorName?: string; // 선택: 글 작성자 이름
-    restaurant?: string; // 선택: 음식점 이름
-    maxParticipants?: number; // ✅ 추가 (희망 인원)
-    location?: string;        // ✅ 추가 (서울 구)
+    authorId: string;
+    authorName?: string;
+    restaurant?: string;
+    maxParticipants?: number;
+    location?: string;
+    status?: "open" | "closed";
+    participantsCount?: number;
+    createdAt?: Date | null; // ✅ 표시용
   };
 
   const router = useRouter();
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("전체");
-  const [location, setLocation] = useState("전체"); // ✅ 추가: 장소 필터
-  //const currentUserId = auth.currentUser?.uid;
+  const [location, setLocation] = useState("전체");
+  const [showClosed, setShowClosed] = useState(false);
+
+  // ✅ 정렬 옵션
+  type SortBy = "latest" | "oldest" | "fill-desc" | "fill-asc";
+  const [sortBy, setSortBy] = useState<SortBy>("latest");
 
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  // 로그인한 사용자 UID 가져오기
   useEffect(() => {
     setCurrentUserId(auth.currentUser?.uid || null);
-
-    // auth 상태 변화 감지
-    auth.onAuthStateChanged((user) => {
-      setCurrentUserId(user ? user.uid : null);
-    });
+    const unsub = auth.onAuthStateChanged((u) => setCurrentUserId(u?.uid ?? null));
+    return () => unsub();
   }, []);
 
-  // 삭제 함수
-  const handleDelete = async (postId: string) => {
-    if (!currentUserId) return;
-    try {
-      await deleteDoc(doc(db, "posts", postId));
-      alert("글이 삭제되었습니다.");
-      fetchPosts(); // 삭제 후 다시 불러오기// 필요하면 posts 다시 불러오기
-    } catch (error) {
-      console.error("삭제 실패:", error);
-      alert("삭제에 실패했습니다.");
-    }
+  // 시간 포맷
+  const timeAgo = (d?: Date | null) => {
+    if (!d) return "";
+    const diff = (Date.now() - d.getTime()) / 1000; // s
+    if (diff < 60) return "방금 전";
+    if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+    if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}일 전`;
+    // YYYY.MM.DD HH:mm
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}.${pad(d.getMonth() + 1)}.${pad(d.getDate())} ${pad(
+      d.getHours()
+    )}:${pad(d.getMinutes())}`;
   };
+
+  // ✅ 실시간 구독 + 자동 마감 처리 (participantsCount 기준)
+  useEffect(() => {
+    const qy = query(collection(db, "posts"), orderBy("createdAt", "desc"));
+    const unsub = onSnapshot(qy, async (snap) => {
+      const list: Post[] = [];
+      const updates: Promise<any>[] = [];
+
+      snap.forEach((d) => {
+        const data = d.data() as any;
+
+        const curr: number =
+          typeof data.participantsCount === "number" ? data.participantsCount : 0;
+        const max: number | undefined =
+          typeof data.maxParticipants === "number" ? data.maxParticipants : undefined;
+        const status: "open" | "closed" = data.status ?? "open";
+        const full = typeof max === "number" && max > 0 ? curr >= max : false;
+
+        if (full && status !== "closed") {
+          updates.push(
+            updateDoc(doc(db, "posts", d.id), {
+              status: "closed",
+              closedAt: serverTimestamp(),
+            }).catch(() => {})
+          );
+        }
+
+        list.push({
+          id: d.id,
+          category: data.category ?? "기타",
+          title: data.title ?? "(제목 없음)",
+          content: data.content ?? "",
+          authorId: data.authorId ?? "",
+          authorName: data.authorName ?? "",
+          restaurant: data.restaurant ?? "",
+          maxParticipants: max,
+          location: data.location ?? "",
+          status,
+          participantsCount: curr,
+          createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : null, // ✅
+        });
+      });
+
+      setPosts(list);
+      if (updates.length) Promise.allSettled(updates);
+    });
+
+    return () => unsub();
+  }, []);
+
   const categories = ["전체", "한식", "중식", "일식", "양식"];
   const SEOUL_DISTRICTS = [
     "전체",
@@ -56,39 +121,86 @@ export default function MatchesPage() {
     "종로구","중구","중랑구",
   ];
 
-  // Firestore에서 게시글 불러오기
-  const fetchPosts = async () => {
-    const querySnapshot = await getDocs(collection(db, "posts"));
-    const postsArray = querySnapshot.docs.map((doc) => {
-       const data = doc.data() as Omit<Post, "id">; // id 제외 Post 타입
-       return { id: doc.id, ...data };
-    });
-    setPosts(postsArray);
+  // 삭제
+  const handleDelete = async (postId: string) => {
+    if (!currentUserId) return;
+    try {
+      await deleteDoc(doc(db, "posts", postId));
+      alert("글이 삭제되었습니다.");
+    } catch (e) {
+      console.error("삭제 실패:", e);
+      alert("삭제에 실패했습니다.");
+    }
   };
 
-  useEffect(() => {
-    fetchPosts();
-  }, []);
+  // 필터링
+  const filteredPosts = useMemo(() => {
+    return posts.filter((post) => {
+      if (!showClosed && post.status === "closed") return false;
+      const matchesCategory = category === "전체" ? true : post.category === category;
+      const matchesLocation = location === "전체" ? true : post.location === location;
+      const matchesSearch = search
+        ? (post.title || "").includes(search) || (post.content || "").includes(search)
+        : true;
+      return matchesCategory && matchesLocation && matchesSearch;
+    });
+  }, [posts, showClosed, category, location, search]);
 
-  // 삭제 기능
-  /*const handleDelete = async (id: string) => {
-    await deleteDoc(doc(db, "posts", id));
-    fetchPosts(); // 삭제 후 갱신
-  };*/
+  // ✅ 정렬
+  const sortedPosts = useMemo(() => {
+    const arr = [...filteredPosts];
+    arr.sort((a, b) => {
+      const aCnt = typeof a.participantsCount === "number" ? a.participantsCount : 0;
+      const bCnt = typeof b.participantsCount === "number" ? b.participantsCount : 0;
+      const aMax = typeof a.maxParticipants === "number" ? a.maxParticipants : 0;
+      const bMax = typeof b.maxParticipants === "number" ? b.maxParticipants : 0;
 
-  // 검색 + 카테고리 필터
-  const filteredPosts = posts.filter((post) => {
-    const matchesCategory = category === "전체" ? true : post.category === category;
-    const matchesLocation = location === "전체" ? true : post.location === location;
-    const matchesSearch = search
-      ? post.title.includes(search) || post.content.includes(search)
-      : true;
-    return matchesCategory && matchesLocation && matchesSearch;
-  });
+      if (sortBy === "latest") {
+        return (b.createdAt?.getTime() || 0) - (a.createdAt?.getTime() || 0);
+      }
+      if (sortBy === "oldest") {
+        return (a.createdAt?.getTime() || 0) - (b.createdAt?.getTime() || 0);
+      }
+      if (sortBy === "fill-desc") {
+        const aRate = aMax ? aCnt / aMax : 0;
+        const bRate = bMax ? bCnt / bMax : 0;
+        return bRate - aRate;
+      }
+      // "fill-asc"
+      const aRate = aMax ? aCnt / aMax : 0;
+      const bRate2 = bMax ? bCnt / bMax : 0;
+      return aRate - bRate2;
+    });
+    return arr;
+  }, [filteredPosts, sortBy]);
 
   return (
     <div style={{ padding: "2rem", fontFamily: "Arial, sans-serif", paddingBottom: "90px" }}>
-      <h1 style={{ fontSize: "2rem", marginBottom: "1rem" }}>모임 찾기</h1>
+      {/* 헤더 + 정렬 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1rem" }}>
+        <h1 style={{ fontSize: "2rem", margin: 0 }}>모임 찾기</h1>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, color: "#444" }}>
+          <input
+            type="checkbox"
+            checked={showClosed}
+            onChange={(e) => setShowClosed(e.target.checked)}
+          />
+          마감 포함 보기
+        </label>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 13, color: "#666" }}>정렬</span>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortBy)}
+            style={{ padding: "6px 8px", borderRadius: 8, border: "1px solid #ddd" }}
+          >
+            <option value="latest">최신순</option>
+            <option value="oldest">오래된순</option>
+            <option value="fill-desc">채움률 높은순</option>
+            <option value="fill-asc">채움률 낮은순</option>
+          </select>
+        </div>
+      </div>
 
       {/* 검색 */}
       <input
@@ -99,9 +211,9 @@ export default function MatchesPage() {
         style={{ padding: "0.5rem", width: "100%", marginBottom: "1rem", borderRadius: "5px", border: "1px solid #ccc" }}
       />
 
-      {/* 카테고리 선택 */}
+      {/* 카테고리 */}
       <div style={{ marginBottom: "1rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        {categories.map((cat) => (
+        {["전체","한식","중식","일식","양식"].map((cat) => (
           <button
             key={cat}
             onClick={() => setCategory(cat)}
@@ -119,9 +231,14 @@ export default function MatchesPage() {
         ))}
       </div>
 
-      {/* 장소 선택 필터 */}
+      {/* 장소 */}
       <div style={{ marginBottom: "1rem", display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        {SEOUL_DISTRICTS.map((dist) => (
+        {[
+          "전체","강남구","강동구","강북구","강서구","관악구","광진구","구로구","금천구",
+          "노원구","도봉구","동대문구","동작구","마포구","서대문구","서초구",
+          "성동구","성북구","송파구","양천구","영등포구","용산구","은평구",
+          "종로구","중구","중랑구",
+        ].map((dist) => (
           <button
             key={dist}
             onClick={() => setLocation(dist)}
@@ -139,7 +256,7 @@ export default function MatchesPage() {
         ))}
       </div>
 
-      {/* 글 등록 버튼 */}
+      {/* 글 등록 */}
       <button
         onClick={() => router.push("/pages/matches/uplist")}
         style={{ padding: "0.5rem 1.5rem", backgroundColor: "#003366", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", marginBottom: "1rem" }}
@@ -147,43 +264,101 @@ export default function MatchesPage() {
         글 등록
       </button>
 
-      {/* 글 리스트 */}
+      {/* 리스트 */}
       <div>
-        {filteredPosts.map((post) => (
-          <div
-            key={post.id}
-            style={{ padding: "1rem", border: "1px solid #ccc", borderRadius: "5px", marginBottom: "1rem", position: "relative", cursor: "pointer" }}
-            onClick={() => router.push(`/pages/matches/${post.id}`)} // ✅ 상세 페이지 이동
-          >
-            <strong>{post.title}</strong>
-            <p>인원: {post.maxParticipants || "미정"}</p>
-            <p>장소: {post.location || "미정"}</p>
+        {sortedPosts.map((post) => {
+          const curr = typeof post.participantsCount === "number" ? post.participantsCount : 0;
+          const hasMax = typeof post.maxParticipants === "number" && post.maxParticipants > 0;
+          const full = hasMax ? curr >= (post.maxParticipants as number) : false;
+          const pct = hasMax ? Math.min(100, Math.round((curr / (post.maxParticipants as number)) * 100)) : 0;
 
-            {currentUserId && post.authorId === currentUserId && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation(); // ✅ 상세 페이지로 안 넘어가게 막음
-                  handleDelete(post.id);
-                }}
-                style={{
-                  position: "absolute",
-                  top: "10px",
-                  right: "10px",
-                  backgroundColor: "#ff4d4d",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px",
-                  padding: "0.25rem 0.5rem",
-                  cursor: "pointer",
-                  fontSize: "0.8rem",
-                }}
-              >
-                삭제
-              </button>
-            )}
-          </div>
-        ))}
+          return (
+            <div
+              key={post.id}
+              style={{
+                padding: "1rem",
+                border: "1px solid #ccc",
+                borderRadius: "8px",
+                marginBottom: "1rem",
+                position: "relative",
+                cursor: "pointer",
+                background: full ? "#fff7f7" : "white",
+              }}
+              onClick={() => router.push(`/pages/matches/${post.id}`)}
+            >
+              {/* 제목 + 배지 + 작성시각 */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <strong style={{ fontSize: 16 }}>{post.title}</strong>
+                {hasMax && (
+                  <span
+                    style={{
+                      fontSize: 12,
+                      padding: "2px 8px",
+                      borderRadius: 999,
+                      background: full ? "#fee2e2" : "#e0f2fe",
+                      color: full ? "#b91c1c" : "#075985",
+                      border: `1px solid ${full ? "#fecaca" : "#bae6fd"}`,
+                    }}
+                  >
+                    {full ? "마감" : "모집중"}
+                  </span>
+                )}
+                <span title={post.createdAt?.toString()} style={{ marginLeft: "auto", fontSize: 12, color: "#6b7280" }}>
+                  {timeAgo(post.createdAt)} {/* ✅ 작성 시각 표기 */}
+                </span>
+              </div>
+
+              <p style={{ margin: "2px 0", color: "#333" }}>
+                인원: {hasMax ? `${curr} / ${post.maxParticipants}` : "미정"}
+              </p>
+              <p style={{ margin: "2px 0", color: "#555" }}>장소: {post.location || "미정"}</p>
+
+              {hasMax && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ height: 8, width: "100%", background: "#f3f4f6", borderRadius: 999 }}>
+                    <div
+                      style={{
+                        height: 8,
+                        width: `${pct}%`,
+                        background: full ? "#ef4444" : "#3b82f6",
+                        borderRadius: 999,
+                        transition: "width 200ms linear",
+                      }}
+                    />
+                  </div>
+                  <div style={{ marginTop: 4, fontSize: 12, color: "#6b7280" }}>
+                    {pct}% 채움
+                  </div>
+                </div>
+              )}
+
+              {currentUserId && post.authorId === currentUserId && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(post.id);
+                  }}
+                  style={{
+                    position: "absolute",
+                    top: 10,
+                    right: 10,
+                    backgroundColor: "#ff4d4d",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "6px",
+                    padding: "0.25rem 0.5rem",
+                    cursor: "pointer",
+                    fontSize: "0.8rem",
+                  }}
+                >
+                  삭제
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
+
